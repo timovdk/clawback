@@ -3,7 +3,7 @@
 // the next launch. Cat gifs are cached in a separate cache, cache-first.
 // Bump VERSION when the list of files below changes.
 
-const VERSION = 'v7';
+const VERSION = 'v8';
 const SHELL = `uov-shell-${VERSION}`;
 const CATS = 'uov-cats';
 
@@ -23,6 +23,7 @@ const SHELL_FILES = [
   'js/lib.js',
   'js/mascot.js',
   'js/messages.js',
+  'js/storage.js',
   'data/uov.json',
   'cats/cats.json',
 ];

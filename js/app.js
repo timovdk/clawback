@@ -2,21 +2,16 @@
 import { ISSUES } from './config.js';
 import * as MSG from './messages.js';
 import { Mascot, randomCoat } from './mascot.js';
+import { load, loadSync, requestPersistence, save } from './storage.js';
 import {
   buildFormUrl, buildLines, buildSubject, findIssue, formatWhen, groupStops, issuesFor, logToCsv,
   nearestGroups, searchStops, slimStop, stopLabel, toLocalInput,
 } from './lib.js';
 
-// --- storage (per device; may be unavailable in private mode) -----------------
-
-const store = {
-  get(key, fallback) {
-    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
-  },
-  set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
-  },
-};
+// --- storage: IndexedDB with a localStorage mirror, see storage.js ----------------
+// Keys keep their old names so existing logs and settings carry over.
+const KEYS = { settings: 'uov.settings', log: 'uov.log' };
+const dirty = { settings: false, log: false }; // changed since start-up (don't overwrite with older loaded data)
 
 const reducedMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -60,11 +55,11 @@ const S = {
   online: navigator.onLine,
 
   done: null, // { status, entry, message, cat, showCat }
-  settings: { email: '', reply: true, ...store.get('uov.settings', {}) },
-  log: store.get('uov.log', []),
+  settings: { email: '', reply: true, ...loadSync(KEYS.settings, {}) },
+  log: loadSync(KEYS.log, []),
 };
 
-const saveSettings = () => store.set('uov.settings', S.settings);
+const saveSettings = () => { dirty.settings = true; return save(KEYS.settings, S.settings); };
 
 function applyTheme() {
   const t = S.settings.theme || 'system';
@@ -77,7 +72,7 @@ function applyTheme() {
     el.content = colours[t === 'system' ? scheme : t];
   });
 }
-const saveLog = () => store.set('uov.log', S.log);
+const saveLog = () => { dirty.log = true; return save(KEYS.log, S.log); };
 const drafts = () => S.log.filter((e) => e.status === 'draft');
 
 function route(routeId) {
@@ -766,6 +761,14 @@ if ('serviceWorker' in navigator) {
 
 applyTheme();
 m.mount(document.getElementById('app'), App);
+
+// The synchronous mirror is shown first; then switch to the durable copy (unless already edited).
+requestPersistence();
+Promise.all([load(KEYS.settings, null), load(KEYS.log, null)]).then(([settings, log]) => {
+  if (settings && !dirty.settings) { S.settings = { email: '', reply: true, ...settings }; applyTheme(); }
+  if (Array.isArray(log) && !dirty.log) S.log = log;
+  m.redraw();
+});
 
 fetch('cats/cats.json')
   .then((r) => (r.ok ? r.json() : []))
