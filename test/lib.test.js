@@ -2,13 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  buildFormUrl, buildLines, buildSubject, findIssue, groupStops, issuesFor, linesToHtml, logToCsv,
+  buildFormUrl, buildLines, buildSubject, dayDepartures, departureKeys, departuresAround, findIssue,
+  groupStops, issuesFor, linesToHtml, logToCsv,
   nearestGroups, nearestStops, searchStops, slimStop, stopLabel,
 } from '../js/lib.js';
 import { ISSUES } from '../js/config.js';
 import * as MSG from '../js/messages.js';
 
 const data = JSON.parse(readFileSync(new URL('../data/uov.json', import.meta.url), 'utf8'));
+const times = JSON.parse(readFileSync(new URL('../data/times.json', import.meta.url), 'utf8'));
 const vaartscheC = data.stops.find((s) => s.name === 'Station Vaartsche Rijn' && s.platform === 'C');
 
 const report = {
@@ -161,4 +163,97 @@ test('mascot lines in the top bar fit on two lines (≤ 60 characters)', () => {
     ...MSG.SETTINGS, ...MSG.SETTINGS_NO_EMAIL, ...MSG.DONE_HEADER,
   ];
   for (const line of headerLines) assert.ok(line.length <= 60, `${line.length} chars: ${line}`);
+});
+
+// Dates relative to the feed, so the tests keep working after the monthly data refresh.
+const feedDate = (i) => { const s = times.dates[i]; return new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)); };
+const localDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const midWeek = (() => { for (let i = 0; i < times.dates.length; i++) if (feedDate(i).getDay() === 3) return feedDate(i); return feedDate(0); })();
+
+test('departures: two before and the next one, for line 8 to Lunetten', () => {
+  const g = groupStops(data).find((x) => x.name === 'Station Vaartsche Rijn');
+  const l8 = g.lines.find((l) => l.line === '8');
+  const lunetten = l8.headsigns.find((h) => h.headsign === 'Lunetten');
+  const keys = departureKeys(g, l8.routeId, lunetten.dir);
+  assert.ok(keys.length >= 1);
+  assert.ok(keys.every((k) => k.endsWith(`|${l8.routeId}|${lunetten.dir}`)));
+
+  const at = `${localDay(midWeek)}T14:00`;
+  const { list, estimated } = departuresAround(times, keys, at);
+  assert.equal(estimated, false);
+  assert.equal(list.length, 3);
+  assert.ok(list[0].when < list[1].when && list[1].when <= at && list[2].when > at, JSON.stringify(list));
+  assert.ok(list.every((d) => d.dayOffset === 0 && /^\d\d:\d\d$/.test(d.time)));
+});
+
+test('departures: dates outside the feed use the same weekday', () => {
+  const key = Object.keys(times.k)[0];
+  const inside = dayDepartures(times, key, midWeek);
+  const later = new Date(midWeek.getFullYear(), midWeek.getMonth(), midWeek.getDate() + 7 * 20);
+  const outside = dayDepartures(times, key, later);
+  assert.equal(inside.estimated, false);
+  assert.equal(outside.estimated, true);
+  assert.equal(later.getDay(), midWeek.getDay());
+  assert.ok(outside.minutes.length > 0);
+});
+
+test('departures: trips after midnight belong to the previous service day', () => {
+  // a key with a departure after 24:00 on some date
+  let found = null;
+  for (const [key, entry] of Object.entries(times.k)) {
+    for (let i = 1; i < times.dates.length - 1 && !found; i++) {
+      const late = entry.p[entry.d[i]].find((t) => t >= 1440 && t < 1500);
+      if (late) found = { key, i, late };
+    }
+    if (found) break;
+  }
+  assert.ok(found, 'some trip runs after midnight');
+  const next = new Date(feedDate(found.i).getFullYear(), feedDate(found.i).getMonth(), feedDate(found.i).getDate() + 1);
+  const mins = found.late - 1440;
+  const hhmm = `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  const { list } = departuresAround(times, [found.key], `${localDay(next)}T${hhmm}`, { before: 1, after: 0 });
+  assert.equal(list.length, 1);
+  assert.equal(list[0].when, `${localDay(next)}T${hhmm}`, 'shown on the calendar day it actually departs');
+});
+
+test('a picked departure is described as the scheduled departure of the ride', () => {
+  const lines = buildLines({ ...report, departure: true });
+  assert.match(lines[0], /^Datum: .*16.*nov.*2026$/);
+  assert.equal(lines[1], 'Geplande vertrektijd van de rit: 14:05 (volgens de dienstregeling)');
+  assert.equal(lines[2], 'Lijn: 28 richting Science Park');
+  assert.equal(buildSubject({ ...report, departure: true }), 'Gordel rolstoelplek defect – lijn 28 – rit van 14:05 – bus 4123');
+  // without a picked departure nothing changes
+  assert.match(buildLines(report)[0], /^Datum en tijd: /);
+  assert.doesNotMatch(buildLines(report).join(' '), /vertrektijd/);
+  assert.doesNotMatch(buildSubject(report), /rit van/);
+});
+
+test('fallback uses the most common timetable for that weekday, not a one-off day', () => {
+  const key = Object.keys(times.k).find((k) => {
+    const e = times.k[k];
+    return new Set(e.d).size > 2; // has some variation
+  });
+  const e = times.k[key];
+  const weekday = midWeek.getDay();
+  const counts = {};
+  times.dates.forEach((s, j) => {
+    if (new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)).getDay() === weekday) counts[e.d[j]] = (counts[e.d[j]] || 0) + 1;
+  });
+  const common = +Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  const far = new Date(midWeek.getFullYear(), midWeek.getMonth(), midWeek.getDate() + 7 * 30);
+  assert.deepEqual(dayDepartures(times, key, far).minutes, e.p[common]);
+});
+
+test('loop lines: both directions to the same destination are listed separately, with "via"', () => {
+  const groups = groupStops(data);
+  for (const g of groups) {
+    for (const l of g.lines) {
+      const labels = l.headsigns.map((h) => h.headsign);
+      assert.equal(new Set(labels).size, labels.length, `${g.key} line ${l.line}: ${labels}`);
+    }
+  }
+  const helium = groups.find((g) => g.name === 'Heliumweg').lines.find((l) => l.line === '1');
+  assert.equal(helium.headsigns.length, 2);
+  assert.ok(helium.headsigns.every((h) => /^Centraal Station \(via .+\)$/.test(h.headsign)));
+  assert.notEqual(helium.headsigns[0].dir, helium.headsigns[1].dir);
 });

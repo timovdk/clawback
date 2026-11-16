@@ -44,13 +44,14 @@ DevTools → Application → Service workers, tick "Update on reload" while deve
 | `js/lib.js` | pure logic (form link, description, stops), tested in `test/` |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA: offline cache and home screen icon |
 | `data/uov.json` | stops and lines, built by `scripts/build_data.py` |
+| `data/times.json` | departure times per platform, line and direction (same script) |
 | `cats/` | gifs shown after sending; credits in `cats/credits.json` |
 | `tools/prefill-test.html` | check the form prefill after U-OV changes their form |
 
 ### Publishing
 
 `.github/workflows/deploy.yml` publishes the app to GitHub Pages on every push to `main`, and
-refreshes the timetable data on the 1st of every month (or by hand: Actions → "Update data and
+refreshes the timetable data every Monday (or by hand: Actions → "Update data and
 deploy" → Run workflow). The tests run before every publish; if they fail, nothing is published
 and GitHub e-mails you.
 

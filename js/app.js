@@ -4,7 +4,8 @@ import * as MSG from './messages.js';
 import { Mascot, randomCoat } from './mascot.js';
 import { load, loadSync, requestPersistence, save } from './storage.js';
 import {
-  buildFormUrl, buildLines, buildSubject, findIssue, formatWhen, groupStops, issuesFor, logToCsv,
+  buildFormUrl, buildLines, buildSubject, departureKeys, departuresAround, findIssue, formatWhen, groupStops,
+  issuesFor, logToCsv,
   nearestGroups, searchStops, slimStop, stopLabel, toLocalInput,
 } from './lib.js';
 
@@ -23,6 +24,8 @@ const S = {
   groupByKey: new Map(),
   loadError: '',
   cats: [],
+  times: null, // data/times.json, loaded when first needed
+  timesState: 'idle', // 'idle' | 'loading' | 'ready' | 'error'
   tab: 'report',
 
   // finding the stop
@@ -43,6 +46,8 @@ const S = {
   vehicle: '',
   when: toLocalInput(new Date()),
   whenTouched: false,
+  departure: null, // { when, key }: a departure picked from the timetable
+  anchor: null, // { when, key }: the time the departure choices are shown around
   issueId: null,
   subId: null,
   subject: '',
@@ -54,6 +59,7 @@ const S = {
   tabLine: { log: MSG.pick(MSG.LOG), settings: MSG.pick(MSG.SETTINGS) },
   online: navigator.onLine,
 
+  updateReady: false, // a newer version is stored; show the reload banner
   done: null, // { status, entry, message, cat, showCat }
   settings: { email: '', reply: true, ...loadSync(KEYS.settings, {}) },
   log: loadSync(KEYS.log, []),
@@ -132,10 +138,37 @@ function chooseRoute(lineEntry) {
 
 function chooseDirection(lineEntry, h) {
   S.pickedRoute = null;
-  S.line = { routeId: lineEntry.routeId, line: lineEntry.line, headsign: h.headsign, platform: slimStop(h.stop) };
+  S.line = { routeId: lineEntry.routeId, line: lineEntry.line, headsign: h.headsign, dir: h.dir, platform: slimStop(h.stop) };
   // If only one issue applies to this vehicle (trams: "Anders"), pick it straight away.
   const options = issuesFor(vehicleMode());
   if (options.length === 1 && !findIssue(S.issueId, S.subId, vehicleMode())) pickIssue(options[0].id);
+}
+
+/** Identifies stop + line + direction; a picked departure only counts while this matches. */
+function rideKey() {
+  return S.stop && S.line && S.line.routeId && S.line.dir != null ? `${S.stop.key}|${S.line.routeId}|${S.line.dir}` : null;
+}
+
+function departurePicked() {
+  return !!(S.departure && S.departure.key === rideKey() && S.departure.when === S.when);
+}
+
+function ensureTimes() {
+  if (S.timesState !== 'idle') return;
+  S.timesState = 'loading';
+  fetch('data/times.json')
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((t) => { S.times = t; S.timesState = 'ready'; })
+    .catch(() => { S.timesState = 'error'; })
+    .finally(() => m.redraw());
+}
+
+function pickDeparture(d) {
+  const key = rideKey();
+  if (!S.anchor || S.anchor.key !== key) S.anchor = { when: S.when, key };
+  S.when = d.when;
+  S.whenTouched = true;
+  S.departure = { when: d.when, key };
 }
 
 /** 'bus' | 'tram' | null (unknown), from the chosen or typed line. */
@@ -172,6 +205,7 @@ function currentReport() {
     subject: S.subject.trim(),
     text: S.text,
     detail: S.detail,
+    departure: departurePicked(),
     reply: S.settings.reply,
     email: S.settings.email.trim(),
   };
@@ -190,6 +224,7 @@ function snapshot() {
     subject: S.subject,
     text: S.text,
     detail: S.detail,
+    departure: S.departure,
     coords: S.coords,
   };
 }
@@ -256,6 +291,8 @@ function resetReport({ keepRide }) {
     S.vehicle = '';
     S.when = toLocalInput(new Date());
     S.whenTouched = false;
+    S.departure = null;
+    S.anchor = null;
     S.query = '';
   }
   window.scrollTo(0, 0);
@@ -280,6 +317,7 @@ function resumeDraft(entry) {
   S.text = st.text != null ? st.text : entry.text;
   S.textTouched = true;
   S.detail = st.detail || '';
+  S.departure = st.departure || null;
   S.mascot = MSG.pick(MSG.RESUME);
   if (!S.stop && !S.savedStop && st.coords) {
     S.nearby = nearestGroups(S.groups, st.coords.lat, st.coords.lon);
@@ -471,11 +509,37 @@ function RideSection() {
         m('span', 'Datum en tijd'),
         m('input[type=datetime-local]', {
           value: S.when,
-          oninput: (e) => { S.when = e.target.value; S.whenTouched = true; },
+          oninput: (e) => { S.when = e.target.value; S.whenTouched = true; S.anchor = null; },
         }),
       ]),
     ]),
+    DepartureChoices(),
     vehicleMode() !== 'tram' && m('p.hint', 'Bij een defecte gordel of oprijplaat helpt het voertuignummer het meest.'),
+  ]);
+}
+
+/** Two earlier departures and the next one, from the timetable, around the chosen time. */
+function DepartureChoices() {
+  const key = rideKey();
+  if (!key) return null;
+  ensureTimes();
+  if (S.timesState === 'loading') return m('p.hint', 'Vertrektijden laden…');
+  if (S.timesState !== 'ready') return null;
+  const keys = departureKeys(S.stop, S.line.routeId, S.line.dir);
+  const around = S.anchor && S.anchor.key === key ? S.anchor.when : S.when;
+  const { list, estimated } = departuresAround(S.times, keys, around);
+  if (!list.length) return null;
+  const dayLabel = (o) => (o < 0 ? ' (dag ervoor)' : o > 0 ? ' (dag erna)' : '');
+  return m('div.departures', [
+    m('p.departures-label', 'Welke rit? Vertrektijd bij deze halte:'),
+    m('div.chips', { role: 'group', 'aria-label': 'Vertrektijden' }, list.map((d) => {
+      const on = departurePicked() && S.when === d.when;
+      return m('button.chip', {
+        type: 'button', class: on ? 'active' : '', 'aria-pressed': String(on),
+        onclick: () => pickDeparture(d),
+      }, `${d.time}${dayLabel(d.dayOffset)}`);
+    })),
+    estimated && m('p.hint', 'Geschat: deze datum valt buiten de dienstregeling, dus dit zijn de tijden van dezelfde weekdag.'),
   ]);
 }
 
@@ -632,8 +696,8 @@ function LogTab() {
 
 function SettingsTab() {
   const feed = S.data && S.data.feed;
-  // The feed only covers ~4 weeks of trips, but stops and lines rarely change. What matters is
-  // whether the monthly update still runs: warn when the data is older than 45 days.
+  // The feed only covers ~4 weeks ahead, so it's refreshed weekly. Warn when that seems to have
+  // stopped: data older than 3 weeks means departure times beyond the feed are estimates.
   const built = S.data && new Date(S.data.generated);
   const ageDays = built ? (Date.now() - built.getTime()) / 86400000 : 0;
   return [
@@ -662,8 +726,8 @@ function SettingsTab() {
     feed && m('section.card', [
       m('h2', 'Dienstregeling'),
       m('p', `${S.groups.length} haltes, ${Object.keys(S.data.routes).length} lijnen (${Object.values(S.data.operators).join(', ')}).`),
-      m('p.hint', `Bijgewerkt op ${built.toLocaleDateString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric' })}. Wordt elke maand automatisch ververst.`),
-      ageDays > 45 && m('p.warn', 'De haltegegevens zijn al een tijd niet ververst. Nieuwe of gewijzigde haltes en lijnen kunnen ontbreken.'),
+      m('p.hint', `Bijgewerkt op ${built.toLocaleDateString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric' })}. Wordt elke week automatisch ververst.`),
+      ageDays > 21 && m('p.warn', 'De gegevens zijn al een tijd niet ververst. Vertrektijden kunnen geschat zijn, en nieuwe haltes of lijnen kunnen ontbreken.'),
     ]),
     AboutSection(),
   ];
@@ -710,6 +774,25 @@ function openTab(id) {
   window.scrollTo(0, 0);
 }
 
+/** Is there a complaint on screen that would be lost by reloading? */
+function unsavedWork() {
+  return !S.done && !!(S.issueId || S.stop || S.savedStop || S.line || S.vehicle.trim() || S.text.trim());
+}
+
+function UpdateBanner() {
+  if (!S.updateReady) return null;
+  return m('div.update-banner', { role: 'status' }, [
+    m('p', [
+      m('strong', 'Er is een nieuwe versie van Clawback.'),
+      unsavedWork() && m('span', ' Verstuur of bewaar eerst je melding; herladen wist wat nog niet bewaard is.'),
+    ]),
+    m('div.update-actions', [
+      m('button.primary.small', { type: 'button', onclick: () => window.location.reload() }, 'Herladen'),
+      m('button.link', { type: 'button', onclick: () => { S.updateReady = false; } }, 'Later'),
+    ]),
+  ]);
+}
+
 const TABS = [['report', 'Melden'], ['log', 'Logboek'], ['settings', 'Instellingen']];
 
 const App = {
@@ -737,6 +820,7 @@ const App = {
         })),
       ]),
       m('main', body),
+      UpdateBanner(),
     ];
   },
 };
@@ -757,6 +841,16 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
   // Pick up newly added cats for offline use.
   navigator.serviceWorker.ready.then((reg) => reg.active && reg.active.postMessage('precache-cats')).catch(() => {});
+
+  // Update banner: the service worker found newer files, or a new service worker took over.
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'update-available') { S.updateReady = true; m.redraw(); }
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) { S.updateReady = true; m.redraw(); }
+  });
+  navigator.serviceWorker.startMessages();
 }
 
 applyTheme();

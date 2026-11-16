@@ -3,7 +3,7 @@
 // the next launch. Cat gifs are cached in a separate cache, cache-first.
 // Bump VERSION when the list of files below changes.
 
-const VERSION = 'v8';
+const VERSION = 'v9';
 const SHELL = `uov-shell-${VERSION}`;
 const CATS = 'uov-cats';
 
@@ -25,6 +25,7 @@ const SHELL_FILES = [
   'js/messages.js',
   'js/storage.js',
   'data/uov.json',
+  'data/times.json',
   'cats/cats.json',
 ];
 
@@ -70,6 +71,23 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(staleWhileRevalidate(SHELL, key, request, event));
 });
 
+/** Did a file really change? Cheap header check first, then compare the content. */
+async function changed(cached, fresh) {
+  const tag = (r) => r.headers.get('etag') || r.headers.get('last-modified') || '';
+  if (tag(cached) && tag(cached) === tag(fresh)) return false;
+  const [a, b] = await Promise.all([cached.clone().arrayBuffer(), fresh.clone().arrayBuffer()]);
+  if (a.byteLength !== b.byteLength) return true;
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return true;
+  return false;
+}
+
+/** Tell open pages that a newer version is stored; they show a "reload" banner. */
+async function notifyUpdate() {
+  for (const client of await self.clients.matchAll({ type: 'window' })) client.postMessage({ type: 'update-available' });
+}
+
 async function cacheFirst(cacheName, request) {
   const cache = await caches.open(cacheName);
   const hit = await cache.match(request);
@@ -83,7 +101,13 @@ async function staleWhileRevalidate(cacheName, key, request, event) {
   const cache = await caches.open(cacheName);
   const hit = await cache.match(key, { ignoreSearch: request.mode === 'navigate' });
   const update = fetch(request, { cache: 'no-cache' })
-    .then((res) => { if (res.ok) cache.put(key, res.clone()); return res; })
+    .then(async (res) => {
+      if (res.ok) {
+        if (hit && await changed(hit, res)) notifyUpdate();
+        await cache.put(key, res.clone());
+      }
+      return res;
+    })
     .catch(() => null);
   if (hit) {
     event.waitUntil(update);

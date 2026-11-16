@@ -1,8 +1,9 @@
-# Publishes Clawback to GitHub Pages, and refreshes the timetable data once a month.
+# Publishes Clawback to GitHub Pages, and refreshes the timetable data once a week.
 #
 # - On every push to main: run the tests and publish.
-# - On the 1st of each month (and when started by hand): rebuild data/uov.json from the
-#   national GTFS feed, test it, commit it, then publish.
+# - Every Monday (and when started by hand): rebuild data/uov.json and data/times.json from
+#   the national GTFS feed, test them, commit them, then publish. The feed only covers about
+#   four weeks ahead, so a weekly refresh keeps today and the coming weeks covered.
 #
 # Pushes made with GITHUB_TOKEN don't start new workflow runs, so the data job can't rely on
 # its own commit triggering a deploy; that's why both jobs live in this one workflow.
@@ -17,7 +18,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '23 3 1 * *' # 03:23 UTC on the 1st of every month
+    - cron: '23 3 * * 1' # 03:23 UTC every Monday
   workflow_dispatch:
 
 permissions:
@@ -44,7 +45,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Build data/uov.json from the GTFS feed
+      - name: Build the stop and departure data from the GTFS feed
         env:
           UOV_USER_AGENT: ${{ vars.UOV_USER_AGENT || format('clawback/1.0 (+https://github.com/{0})', github.repository) }}
         run: python3 scripts/build_data.py
@@ -56,7 +57,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/uov.json
+          git add data/uov.json data/times.json
           if git diff --cached --quiet; then
             echo "No changes in the data."
           else

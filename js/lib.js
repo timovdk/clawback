@@ -23,12 +23,21 @@ export function toLocalInput(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 'YYYY-MM-DDTHH:MM' -> 'ma 16 nov 2026' */
+export function formatDate(local) {
+  const d = new Date(local);
+  if (Number.isNaN(d.getTime())) return local;
+  return d.toLocaleDateString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/** 'YYYY-MM-DDTHH:MM' -> '14:05' */
+export const formatTime = (local) => local.slice(11, 16);
+
 /** 'YYYY-MM-DDTHH:MM' -> 'ma 16 nov 2026, 14:05' */
 export function formatWhen(local) {
   const d = new Date(local);
   if (Number.isNaN(d.getTime())) return local;
-  const date = d.toLocaleDateString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-  return `${date}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${formatDate(local)}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 // --- stops -------------------------------------------------------------------
@@ -69,7 +78,7 @@ const lineOrder = (a, b) => a.line.length - b.line.length || a.line.localeCompar
 /**
  * Merge platforms (A/B/C, opposite sides of the road ...) into one entry per stop name.
  * Group: { key, town, name, platform: '', lat, lon, platforms: [stop],
- *          lines: [{ routeId, line, headsigns: [{ headsign, stop }] }] }
+ *          lines: [{ routeId, line, headsigns: [{ headsign, dir, stop }] }] }
  */
 export function groupStops(data) {
   const groups = new Map();
@@ -81,10 +90,12 @@ export function groupStops(data) {
       groups.set(key, g);
     }
     g.platforms.push(s);
-    for (const [routeId, headsign] of s.lines) {
+    for (const [routeId, headsign, dir, via] of s.lines) {
       if (!g.byRoute.has(routeId)) g.byRoute.set(routeId, new Map());
       const hs = g.byRoute.get(routeId);
-      if (!hs.has(headsign)) hs.set(headsign, s);
+      // Loop lines can end at the same place in both directions; the data then adds the next stop.
+      const label = via ? `${headsign} (via ${via})` : headsign;
+      if (!hs.has(label)) hs.set(label, { stop: s, dir });
     }
   }
   const out = [];
@@ -93,7 +104,7 @@ export function groupStops(data) {
       .map(([routeId, hs]) => ({
         routeId,
         line: (data.routes[routeId] || {}).line || '?',
-        headsigns: [...hs].map(([headsign, stop]) => ({ headsign, stop })).sort((a, b) => a.headsign.localeCompare(b.headsign, 'nl')),
+        headsigns: [...hs].map(([headsign, { stop, dir }]) => ({ headsign, dir, stop })).sort((a, b) => a.headsign.localeCompare(b.headsign, 'nl')),
       }))
       .sort(lineOrder);
     delete g.byRoute;
@@ -117,6 +128,77 @@ export function slimStop(stopOrGroup) {
   return { key: `${town}|${name}`, id: stopOrGroup.platforms ? null : stopOrGroup.id, town, name, platform };
 }
 
+// --- departures (data/times.json) -----------------------------------------------------
+
+const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+
+/** Keys into times.k for every platform of a stop group that serves this line + direction. */
+export function departureKeys(group, routeId, dir) {
+  if (!group || !group.platforms || routeId == null || dir == null) return [];
+  return group.platforms
+    .filter((s) => s.lines.some(([rid, , d]) => rid === routeId && String(d) === String(dir)))
+    .map((s) => `${s.quay || s.id}|${routeId}|${dir}`);
+}
+
+/**
+ * Departure minutes (from the service day's midnight) for one key on one date.
+ * The data has a timetable per calendar date (weekends, holidays and roadworks included).
+ * Dates outside it use the timetable that occurs most often on that weekday, so a one-off
+ * day (a holiday, a diversion) isn't taken as the norm. Returns { minutes, estimated }.
+ */
+export function dayDepartures(times, key, date) {
+  const entry = times && times.k[key];
+  if (!entry) return { minutes: [], estimated: false };
+  const i = times.dates.indexOf(ymd(date));
+  if (i >= 0) return { minutes: entry.p[entry.d[i]], estimated: false };
+
+  const weekday = date.getDay();
+  const count = new Map();
+  times.dates.forEach((s, j) => {
+    if (new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)).getDay() === weekday) {
+      count.set(entry.d[j], (count.get(entry.d[j]) || 0) + 1);
+    }
+  });
+  if (!count.size) return { minutes: [], estimated: false };
+  const [pattern] = [...count].sort((a, b) => b[1] - a[1])[0];
+  return { minutes: entry.p[pattern], estimated: true };
+}
+
+/**
+ * The departures just before and after a moment: by default the 2 before (or at) and the next one.
+ * `localWhen` is 'YYYY-MM-DDTHH:MM'. Handles trips after midnight (GTFS times over 24:00 belong to
+ * the previous service day). Returns { list: [{ when, time, dayOffset }], estimated }.
+ */
+export function departuresAround(times, keys, localWhen, { before = 2, after = 1 } = {}) {
+  const at = new Date(localWhen);
+  if (!times || !keys.length || Number.isNaN(at.getTime())) return { list: [], estimated: false };
+  const y = at.getFullYear();
+  const mo = at.getMonth();
+  const da = at.getDate();
+  const now = at.getHours() * 60 + at.getMinutes();
+  const all = new Set();
+  let estimated = false;
+  for (const offset of [-1, 0, 1]) {
+    const day = new Date(y, mo, da + offset);
+    for (const key of keys) {
+      const r = dayDepartures(times, key, day);
+      if (offset === 0 && r.estimated) estimated = true;
+      for (const t of r.minutes) all.add(offset * 1440 + t);
+    }
+  }
+  const sorted = [...all].sort((a, b) => a - b);
+  const pick = [
+    ...sorted.filter((t) => t <= now).slice(-before),
+    ...sorted.filter((t) => t > now).slice(0, after),
+  ];
+  const list = pick.map((t) => {
+    const d = new Date(y, mo, da, 0, t);
+    const dayOffset = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(y, mo, da)) / 86400000);
+    return { when: toLocalInput(d), time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, dayOffset };
+  });
+  return { list, estimated };
+}
+
 export function stopLabel(stop) {
   const name = stop.town ? `${stop.town}, ${stop.name}` : stop.name;
   return stop.platform ? `${name} (perron ${stop.platform})` : name;
@@ -131,12 +213,17 @@ export function stopLabel(stop) {
 export function buildSubject(report) {
   const parts = [report.subject];
   if (report.line) parts.push(`lijn ${report.line}`);
+  if (report.departure) parts.push(`rit van ${formatTime(report.when)}`);
   if (report.vehicle) parts.push(`${report.mode === 'tram' ? 'tram' : 'bus'} ${report.vehicle}`);
   return parts.filter(Boolean).join(' – ');
 }
 
 export function buildLines(report) {
-  const lines = [`Datum en tijd: ${formatWhen(report.when)}`];
+  // A picked departure is the scheduled departure of the ride, not the moment something happened:
+  // say so explicitly, so U-OV can look up the ride.
+  const lines = report.departure
+    ? [`Datum: ${formatDate(report.when)}`, `Geplande vertrektijd van de rit: ${formatTime(report.when)} (volgens de dienstregeling)`]
+    : [`Datum en tijd: ${formatWhen(report.when)}`];
   if (report.line) lines.push(`Lijn: ${report.line}${report.headsign ? ` richting ${report.headsign}` : ''}`);
   if (report.stop) lines.push(`Halte: ${stopLabel(report.stop)}`);
   if (report.vehicle) lines.push(`Voertuignummer: ${report.vehicle}`);
