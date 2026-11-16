@@ -165,11 +165,11 @@ export function dayDepartures(times, key, date) {
 }
 
 /**
- * The departures just before and after a moment: by default the 2 before (or at) and the next one.
+ * The departures just before and after a moment: by default 2 before (or at) and 2 after.
  * `localWhen` is 'YYYY-MM-DDTHH:MM'. Handles trips after midnight (GTFS times over 24:00 belong to
  * the previous service day). Returns { list: [{ when, time, dayOffset }], estimated }.
  */
-export function departuresAround(times, keys, localWhen, { before = 2, after = 1 } = {}) {
+export function departuresAround(times, keys, localWhen, { before = 2, after = 2 } = {}) {
   const at = new Date(localWhen);
   if (!times || !keys.length || Number.isNaN(at.getTime())) return { list: [], estimated: false };
   const y = at.getFullYear();

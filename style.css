@@ -419,7 +419,19 @@ figure.cat figcaption { margin-top: 4px; color: var(--muted); font-size: 0.8rem;
 
 .departures { margin: 4px 0 8px; }
 .departures-label { font-size: 0.9rem; font-weight: 600; margin: 0 0 6px; }
-.departures .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 4 equal columns: fits next to each other on narrow phones too */
+.departures .chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.chip.departure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 8px 2px;
+  border-radius: 12px;
+}
+.departure-time { font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.departure-day { font-size: 0.7rem; color: var(--muted); line-height: 1.1; }
 
 .update-banner {
   position: fixed;
@@ -440,3 +452,7 @@ figure.cat figcaption { margin-top: 4px; color: var(--muted); font-size: 0.8rem;
 .update-actions { display: flex; align-items: center; gap: 16px; }
 .primary.small { width: auto; min-height: 44px; margin: 0; padding: 8px 18px; }
 main { padding-bottom: calc(env(safe-area-inset-bottom) + 120px); }
+
+.field-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.field-head label { font-size: 0.9rem; font-weight: 600; }
+.small-link { padding: 6px 10px; margin: -6px -10px -6px 0; font-size: 0.95rem; }

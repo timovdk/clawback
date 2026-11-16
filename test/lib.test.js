@@ -181,8 +181,8 @@ test('departures: two before and the next one, for line 8 to Lunetten', () => {
   const at = `${localDay(midWeek)}T14:00`;
   const { list, estimated } = departuresAround(times, keys, at);
   assert.equal(estimated, false);
-  assert.equal(list.length, 3);
-  assert.ok(list[0].when < list[1].when && list[1].when <= at && list[2].when > at, JSON.stringify(list));
+  assert.equal(list.length, 4);
+  assert.ok(list[0].when < list[1].when && list[1].when <= at && list[2].when > at && list[3].when > list[2].when, JSON.stringify(list));
   assert.ok(list.every((d) => d.dayOffset === 0 && /^\d\d:\d\d$/.test(d.time)));
 });
 

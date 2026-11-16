@@ -47,7 +47,7 @@ const S = {
   when: toLocalInput(new Date()),
   whenTouched: false,
   departure: null, // { when, key }: a departure picked from the timetable
-  anchor: null, // { when, key }: the time the departure choices are shown around
+  anchor: null, // { when, touched }: the time before a departure was picked (restored if the line changes)
   issueId: null,
   subId: null,
   subject: '',
@@ -164,11 +164,32 @@ function ensureTimes() {
 }
 
 function pickDeparture(d) {
-  const key = rideKey();
-  if (!S.anchor || S.anchor.key !== key) S.anchor = { when: S.when, key };
+  if (!S.anchor) S.anchor = { when: S.when, touched: S.whenTouched };
   S.when = d.when;
   S.whenTouched = true;
-  S.departure = { when: d.when, key };
+  S.departure = { when: d.when, key: rideKey() };
+}
+
+/**
+ * A picked departure belongs to one stop + line + direction. When that changes, undo it: the time
+ * goes back to what it was before (or to now, if it was never set by hand). Everything typed by
+ * hand (description, vehicle, a typed time) stays.
+ */
+function reconcileDeparture() {
+  if (!S.departure || S.departure.key === rideKey()) return;
+  if (S.anchor) {
+    S.when = S.anchor.touched ? S.anchor.when : toLocalInput(new Date());
+    S.whenTouched = S.anchor.touched;
+  }
+  S.departure = null;
+  S.anchor = null;
+}
+
+function setNow() {
+  S.when = toLocalInput(new Date());
+  S.whenTouched = false;
+  S.departure = null;
+  S.anchor = null;
 }
 
 /** 'bus' | 'tram' | null (unknown), from the chosen or typed line. */
@@ -225,6 +246,7 @@ function snapshot() {
     text: S.text,
     detail: S.detail,
     departure: S.departure,
+    anchor: S.anchor,
     coords: S.coords,
   };
 }
@@ -318,6 +340,7 @@ function resumeDraft(entry) {
   S.textTouched = true;
   S.detail = st.detail || '';
   S.departure = st.departure || null;
+  S.anchor = st.anchor || null;
   S.mascot = MSG.pick(MSG.RESUME);
   if (!S.stop && !S.savedStop && st.coords) {
     S.nearby = nearestGroups(S.groups, st.coords.lat, st.coords.lon);
@@ -505,11 +528,14 @@ function RideSection() {
           oninput: (e) => { S.vehicle = e.target.value; },
         }),
       ]),
-      m('label.field', [
-        m('span', 'Datum en tijd'),
-        m('input[type=datetime-local]', {
+      m('div.field', [
+        m('div.field-head', [
+          m('label', { for: 'when' }, 'Datum en tijd'),
+          m('button.link.small-link', { type: 'button', onclick: setNow }, 'Nu'),
+        ]),
+        m('input#when[type=datetime-local]', {
           value: S.when,
-          oninput: (e) => { S.when = e.target.value; S.whenTouched = true; S.anchor = null; },
+          oninput: (e) => { S.when = e.target.value; S.whenTouched = true; S.anchor = null; S.departure = null; },
         }),
       ]),
     ]),
@@ -518,7 +544,7 @@ function RideSection() {
   ]);
 }
 
-/** Two earlier departures and the next one, from the timetable, around the chosen time. */
+/** Two earlier and two later departures, from the timetable, around the chosen time. */
 function DepartureChoices() {
   const key = rideKey();
   if (!key) return null;
@@ -526,18 +552,18 @@ function DepartureChoices() {
   if (S.timesState === 'loading') return m('p.hint', 'Vertrektijden laden…');
   if (S.timesState !== 'ready') return null;
   const keys = departureKeys(S.stop, S.line.routeId, S.line.dir);
-  const around = S.anchor && S.anchor.key === key ? S.anchor.when : S.when;
+  const around = S.anchor && departurePicked() ? S.anchor.when : S.when;
   const { list, estimated } = departuresAround(S.times, keys, around);
   if (!list.length) return null;
-  const dayLabel = (o) => (o < 0 ? ' (dag ervoor)' : o > 0 ? ' (dag erna)' : '');
+  const dayLabel = (o) => (o < 0 ? 'dag ervoor' : o > 0 ? 'dag erna' : '');
   return m('div.departures', [
     m('p.departures-label', 'Welke rit? Vertrektijd bij deze halte:'),
     m('div.chips', { role: 'group', 'aria-label': 'Vertrektijden' }, list.map((d) => {
       const on = departurePicked() && S.when === d.when;
-      return m('button.chip', {
+      return m('button.chip.departure', {
         type: 'button', class: on ? 'active' : '', 'aria-pressed': String(on),
         onclick: () => pickDeparture(d),
-      }, `${d.time}${dayLabel(d.dayOffset)}`);
+      }, [m('span.departure-time', d.time), d.dayOffset !== 0 && m('span.departure-day', dayLabel(d.dayOffset))]);
     })),
     estimated && m('p.hint', 'Geschat: deze datum valt buiten de dienstregeling, dus dit zijn de tijden van dezelfde weekdag.'),
   ]);
@@ -797,6 +823,7 @@ const TABS = [['report', 'Melden'], ['log', 'Logboek'], ['settings', 'Instelling
 
 const App = {
   view() {
+    reconcileDeparture();
     let body;
     if (S.loadError) body = m('section.card', m('p.warn', S.loadError));
     else if (!S.data) body = m('section.card', m('p', 'Laden…'));
