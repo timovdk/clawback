@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prefill test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  label { display: block; margin-top: .75rem; font-weight: 600; }
+  input { width: 100%; padding: .5rem; font-size: 1rem; box-sizing: border-box; }
+  a.btn { display: block; margin: .75rem 0 .25rem; padding: .9rem 1rem; background: #8a5a8a; color: #fff; border-radius: .5rem; text-decoration: none; font-weight: 600; }
+  small { color: #666; }
+</style>
+</head>
+<body>
+<h1>U-OV form prefill test</h1>
+<p>Developer tool. Use it when U-OV changes their form: update the IDs in <code>js/config.js</code>,
+then open these links and check that every field is filled in. Don't submit (or do, as a real complaint).</p>
+<p>Run it through the local server (<code>npm run serve</code>, then <code>/tools/prefill-test.html</code>).</p>
+
+<label for="email">E-mail (stored only in this browser)</label>
+<input id="email" type="email" autocomplete="email">
+
+<div id="links"></div>
+
+<script type="module">
+import { FORM } from '../js/config.js';
+import { buildFormUrl, toLocalInput } from '../js/lib.js';
+
+const sample = (email) => ({
+  when: toLocalInput(new Date()),
+  line: '28',
+  headsign: 'Science Park',
+  stop: { town: 'Utrecht', name: 'Station Vaartsche Rijn', platform: 'C' },
+  vehicle: '4123',
+  issueId: 'seatbelt',
+  mode: 'bus',
+  subject: 'TEST - Gordel rolstoelplek defect',
+  text: 'Dit is een test van het vooraf invullen.\n\nNiet in behandeling nemen.',
+  reply: true,
+  email,
+});
+
+function render() {
+  const email = document.getElementById('email').value.trim();
+  try { localStorage.setItem('prefill-test-email', email); } catch {}
+  const baseline = `${FORM.url}?${new URLSearchParams({ ticket_form_id: FORM.ticketFormId, tf_subject: 'TEST' })}`;
+  const variants = [
+    ['Full link, exactly as the app builds it', buildFormUrl(sample(email))],
+    ['Baseline: form + subject only', baseline],
+  ];
+  document.getElementById('links').innerHTML = variants.map(([name, url]) =>
+    `<a class="btn" href="${url.replace(/"/g, '&quot;')}" target="_blank" rel="noopener">${name}</a><small>${url.length} characters</small>`).join('');
+}
+
+try { document.getElementById('email').value = localStorage.getItem('prefill-test-email') || ''; } catch {}
+document.getElementById('email').addEventListener('input', render);
+render();
+</script>
+</body>
+</html>

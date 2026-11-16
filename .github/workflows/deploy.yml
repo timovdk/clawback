@@ -1,0 +1,106 @@
+# Publishes Clawback to GitHub Pages, and refreshes the timetable data once a month.
+#
+# - On every push to main: run the tests and publish.
+# - On the 1st of each month (and when started by hand): rebuild data/uov.json from the
+#   national GTFS feed, test it, commit it, then publish.
+#
+# Pushes made with GITHUB_TOKEN don't start new workflow runs, so the data job can't rely on
+# its own commit triggering a deploy; that's why both jobs live in this one workflow.
+#
+# Setup (once): Settings → Pages → Source: "GitHub Actions".
+# Optional: Settings → Secrets and variables → Actions → Variables → UOV_USER_AGENT, to tell
+# OVapi how to reach you (their usage policy), e.g. "clawback/1.0 (you@example.com)".
+
+name: Update data and deploy
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 3 1 * *' # 03:23 UTC on the 1st of every month
+  workflow_dispatch:
+
+permissions:
+  contents: write # commit the refreshed data
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  refresh-data:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build data/uov.json from the GTFS feed
+        env:
+          UOV_USER_AGENT: ${{ vars.UOV_USER_AGENT || format('clawback/1.0 (+https://github.com/{0})', github.repository) }}
+        run: python3 scripts/build_data.py
+
+      - name: Test with the new data
+        run: npm test
+
+      - name: Commit the new data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/uov.json
+          if git diff --cached --quiet; then
+            echo "No changes in the data."
+          else
+            git commit -m "Update timetable data ($(date -u +%Y-%m-%d))"
+            git push
+          fi
+
+  deploy:
+    needs: refresh-data
+    # Run after a successful data refresh, and also on pushes (when refresh-data is skipped).
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }} # include the data commit made above
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Update the cat list
+        run: python3 scripts/build_cats.py
+
+      - name: Test
+        run: npm test
+
+      - name: Collect the files the app needs
+        run: |
+          mkdir _site
+          cp -r index.html style.css manifest.webmanifest icon.svg sw.js LICENSE js vendor data cats icons _site/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

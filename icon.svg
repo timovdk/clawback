@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#c8a2c8"/>
+  <!-- mascot (orange coat), kept inside the maskable safe zone -->
+  <g transform="translate(106 128) scale(2.5)">
+    <path d="M16 44 L20 4 L50 26 Z" fill="#f2a541" stroke="#3b2a1a" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M104 44 L100 4 L70 26 Z" fill="#f2a541" stroke="#3b2a1a" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M25 32 L26 15 L40 26 Z" fill="#f7b6c2"/>
+    <path d="M95 32 L94 15 L80 26 Z" fill="#f7b6c2"/>
+    <ellipse cx="60" cy="60" rx="48" ry="40" fill="#f2a541" stroke="#3b2a1a" stroke-width="4"/>
+    <path d="M48 24 l4 12 M60 22 v13 M72 24 l-4 12" stroke="#c46f1f" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="42" cy="57" rx="6.5" ry="8.5" fill="#7cb342" stroke="#3b2a1a" stroke-width="1.5"/>
+    <ellipse cx="42" cy="57" rx="2.6" ry="6.5" fill="#3b2a1a"/>
+    <circle cx="44" cy="53.5" r="2" fill="#fff"/>
+    <ellipse cx="78" cy="57" rx="6.5" ry="8.5" fill="#7cb342" stroke="#3b2a1a" stroke-width="1.5"/>
+    <ellipse cx="78" cy="57" rx="2.6" ry="6.5" fill="#3b2a1a"/>
+    <circle cx="80" cy="53.5" r="2" fill="#fff"/>
+    <ellipse cx="29" cy="73" rx="7" ry="4" fill="#f7b6c2"/>
+    <ellipse cx="91" cy="73" rx="7" ry="4" fill="#f7b6c2"/>
+    <path d="M55 68 h10 l-5 6 z" fill="#e46a7e" stroke="#3b2a1a" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M60 74 q-5 7 -11 3 M60 74 q5 7 11 3" fill="none" stroke="#3b2a1a" stroke-width="3" stroke-linecap="round"/>
+    <path d="M6 62 L30 66 M6 72 L30 70 M114 62 L90 66 M114 72 L90 70" stroke="#3b2a1a" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+</svg>
