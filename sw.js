@@ -4,7 +4,8 @@
 // - uov.json and times.json from the R2 bucket (js/config.js, DATA_URL): the same, but in their own
 //   cache that survives app updates, and without the banner (new data isn't a new app version).
 // - Cat gifs: cache-first, in their own cache.
-// Bump VERSION when the list of files below changes.
+// Bump VERSION when the list of files below changes. The deploy appends the commit id to it,
+// so every deploy installs a fresh worker; precaching bypasses the HTTP cache for the same reason.
 
 const VERSION = 'v12';
 const SHELL = `uov-shell-${VERSION}`;
@@ -34,7 +35,7 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(SHELL).then((c) => c.addAll(SHELL_FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
