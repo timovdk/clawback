@@ -5,7 +5,7 @@ import { Mascot, randomCoat } from './mascot.js';
 import { load, loadSync, requestPersistence, save } from './storage.js';
 import {
   buildFormUrl, buildLines, buildSubject, departureKeys, departuresAround, findIssue, formatWhen, groupStops,
-  issuesFor, logToCsv,
+  issuesFor, labelledKeys, logToCsv,
   nearestGroups, searchStops, slimStop, stopLabel, toLocalInput,
 } from './lib.js';
 
@@ -53,12 +53,12 @@ const S = {
   stop: null, // group
   savedStop: null, // stop from a resumed draft that is no longer in the timetable data
   pickedRoute: null, // routeId chosen, waiting for direction
-  line: null, // { routeId?, line, headsign, platform? }
+  line: null, // { routeId?, line, headsign, dir?, only?, platform? }; only: a destination other than the main one
   manualLine: false,
   vehicle: '',
   when: toLocalInput(new Date()),
   whenTouched: false,
-  departure: null, // { when, key }: a departure picked from the timetable
+  departure: null, // { when, key, headsign }: a departure picked from the timetable (headsign: where it goes, if not the main destination)
   anchor: null, // { when, touched }: the time before a departure was picked (restored if the line changes)
   issueId: null,
   subId: null,
@@ -144,13 +144,18 @@ function chooseStop(group) {
 }
 
 function chooseRoute(lineEntry) {
-  if (lineEntry.headsigns.length === 1) chooseDirection(lineEntry, lineEntry.headsigns[0]);
+  const [only] = lineEntry.headsigns;
+  if (lineEntry.headsigns.length === 1 && !only.others.length) chooseDirection(lineEntry, only);
   else S.pickedRoute = lineEntry.routeId;
 }
 
-function chooseDirection(lineEntry, h) {
+/** `only`: one of h.others, for the departures to that destination only. */
+function chooseDirection(lineEntry, h, only = null) {
   S.pickedRoute = null;
-  S.line = { routeId: lineEntry.routeId, line: lineEntry.line, headsign: h.headsign, dir: h.dir, platform: slimStop(h.stop) };
+  S.line = {
+    routeId: lineEntry.routeId, line: lineEntry.line, headsign: only || h.headsign, dir: h.dir, only,
+    platform: slimStop(h.stop),
+  };
   // If only one issue applies to this vehicle (trams: "Anders"), pick it straight away.
   const options = issuesFor(vehicleMode());
   if (options.length === 1 && !findIssue(S.issueId, S.subId, vehicleMode())) pickIssue(options[0].id);
@@ -158,7 +163,14 @@ function chooseDirection(lineEntry, h) {
 
 /** Identifies stop + line + direction; a picked departure only counts while this matches. */
 function rideKey() {
-  return S.stop && S.line && S.line.routeId && S.line.dir != null ? `${S.stop.key}|${S.line.routeId}|${S.line.dir}` : null;
+  if (!(S.stop && S.line && S.line.routeId && S.line.dir != null)) return null;
+  return `${S.stop.key}|${S.line.routeId}|${S.line.dir}${S.line.only ? `|${S.line.only}` : ''}`;
+}
+
+/** Where the ride went: the picked departure's own destination, else the chosen one. */
+function rideHeadsign() {
+  if (!S.line) return '';
+  return (departurePicked() && S.departure.headsign) || S.line.headsign;
 }
 
 function departurePicked() {
@@ -178,7 +190,7 @@ function pickDeparture(d) {
   if (!S.anchor) S.anchor = { when: S.when, touched: S.whenTouched };
   S.when = d.when;
   S.whenTouched = true;
-  S.departure = { when: d.when, key: rideKey() };
+  S.departure = { when: d.when, key: rideKey(), headsign: d.headsign || null };
 }
 
 /**
@@ -228,7 +240,7 @@ function currentReport() {
   return {
     when: S.when,
     line: S.line ? S.line.line.trim() : '',
-    headsign: S.line ? S.line.headsign.trim() : '',
+    headsign: rideHeadsign().trim(),
     stop: platform || slimStop(S.stop) || S.savedStop,
     vehicle: S.vehicle.trim(),
     issueId: S.issueId,
@@ -501,7 +513,7 @@ function LineSection() {
     return m('section.card', [
       m('h2', 'Lijn en richting'),
       m('div.chosen', [
-        m('span.inline', [Badge(route(S.line.routeId), S.line.line), ` → ${S.line.headsign}`]),
+        m('span.inline', [Badge(route(S.line.routeId), S.line.line), ` → ${rideHeadsign()}`]),
         m('button.link', { type: 'button', onclick: () => { S.line = null; } }, 'Wijzig'),
       ]),
     ]);
@@ -511,9 +523,15 @@ function LineSection() {
   if (picked) {
     return m('section.card', [
       m('h2', ['Richting van ', Badge(route(picked.routeId), picked.line)]),
-      m('div.list', picked.headsigns.map((h) => m('button.row', {
-        type: 'button', onclick: () => chooseDirection(picked, h),
-      }, m('span.row-title', `→ ${h.headsign}`)))),
+      // Per direction its main destination, with the other destinations that way below it.
+      m('div.list', picked.headsigns.flatMap((h) => [
+        m('button.row', {
+          type: 'button', onclick: () => chooseDirection(picked, h),
+        }, m('span.row-title', `→ ${h.headsign}`)),
+        ...h.others.map((o) => m('button.row.sub', {
+          type: 'button', onclick: () => chooseDirection(picked, h, o),
+        }, m('span.row-main', [m('span.row-title', `→ ${o}`), m('span.row-meta', 'alleen deze ritten')]))),
+      ])),
       m('button.link', { type: 'button', onclick: () => { S.pickedRoute = null; } }, 'Andere lijn'),
     ]);
   }
@@ -562,7 +580,9 @@ function DepartureChoices() {
   ensureTimes();
   if (S.timesState === 'loading') return m('p.hint', 'Vertrektijden laden…');
   if (S.timesState !== 'ready') return null;
-  const keys = departureKeys(S.stop, S.line.routeId, S.line.dir);
+  const keys = S.line.only
+    ? departureKeys(S.stop, S.line.routeId, S.line.dir, S.line.only)
+    : labelledKeys(S.times, departureKeys(S.stop, S.line.routeId, S.line.dir));
   const around = S.anchor && departurePicked() ? S.anchor.when : S.when;
   const { list, estimated } = departuresAround(S.times, keys, around);
   if (!list.length) return null;
@@ -574,7 +594,11 @@ function DepartureChoices() {
       return m('button.chip.departure', {
         type: 'button', class: on ? 'active' : '', 'aria-pressed': String(on),
         onclick: () => pickDeparture(d),
-      }, [m('span.departure-time', d.time), d.dayOffset !== 0 && m('span.departure-day', dayLabel(d.dayOffset))]);
+      }, [
+        m('span.departure-time', d.time),
+        d.headsign && m('span.departure-day', `→ ${d.headsign}`),
+        d.dayOffset !== 0 && m('span.departure-day', dayLabel(d.dayOffset)),
+      ]);
     })),
     estimated && m('p.hint', 'Geschat: deze datum valt buiten de dienstregeling, dus dit zijn de tijden van dezelfde weekdag.'),
   ]);

@@ -70,7 +70,7 @@ docker logs -f clawback-data           # "Data rebuilt: ... Published." after a 
 ```sh
 curl -sI https://clawback-data.timovdk.nl/uov.json | grep -i "http/\|access-control\|cache-control"
 curl -s  https://clawback-data.timovdk.nl/uov.json | head -c 200
-# Is the 4.4 MB times.json compressed on the way? Look for content-encoding: br or gzip
+# Is the 5 MB times.json compressed on the way? Look for content-encoding: br or gzip
 curl -sI -H 'Accept-Encoding: br, gzip' https://clawback-data.timovdk.nl/times.json | grep -i content-encoding
 ```
 

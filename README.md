@@ -43,7 +43,7 @@ DevTools → Application → Service workers, tick "Update on reload" while deve
 | `js/mascot.js` | the mascot drawing and its coats |
 | `js/lib.js` | pure logic (form link, description, stops), tested in `test/` |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA: offline cache and home screen icon |
-| `data/uov.json`, `data/times.json` | stops and lines, and departures per platform/line/direction; built by `scripts/build_data.py`. Fallback copies: the live data comes from the bucket |
+| `data/uov.json`, `data/times.json` | stops and lines, and departures per platform/line/direction (and per destination, when a direction has more than one); built by `scripts/build_data.py`. Fallback copies: the live data comes from the bucket |
 | `nas/` | the weekly data service (Docker, on the NAS), see [nas/README.md](nas/README.md) |
 | `cats/` | gifs shown after sending; credits in `cats/credits.json` |
 | `tools/prefill-test.html` | check the form prefill after U-OV changes their form |

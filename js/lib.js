@@ -78,7 +78,9 @@ const lineOrder = (a, b) => a.line.length - b.line.length || a.line.localeCompar
 /**
  * Merge platforms (A/B/C, opposite sides of the road ...) into one entry per stop name.
  * Group: { key, town, name, platform: '', lat, lon, platforms: [stop],
- *          lines: [{ routeId, line, headsigns: [{ headsign, dir, stop }] }] }
+ *          lines: [{ routeId, line, headsigns: [{ headsign, dir, stop, others: [destination] }] }] }
+ * One headsign per direction: its main destination. `others` are the other destinations in that
+ * direction that are common enough for their own choice (short runs, extensions).
  */
 export function groupStops(data) {
   const groups = new Map();
@@ -90,12 +92,12 @@ export function groupStops(data) {
       groups.set(key, g);
     }
     g.platforms.push(s);
-    for (const [routeId, headsign, dir, via] of s.lines) {
+    for (const [routeId, headsign, dir, via, others = []] of s.lines) {
       if (!g.byRoute.has(routeId)) g.byRoute.set(routeId, new Map());
       const hs = g.byRoute.get(routeId);
       // Loop lines can end at the same place in both directions; the data then adds the next stop.
       const label = via ? `${headsign} (via ${via})` : headsign;
-      if (!hs.has(label)) hs.set(label, { stop: s, dir });
+      if (!hs.has(label)) hs.set(label, { stop: s, dir, others });
     }
   }
   const out = [];
@@ -104,7 +106,8 @@ export function groupStops(data) {
       .map(([routeId, hs]) => ({
         routeId,
         line: (data.routes[routeId] || {}).line || '?',
-        headsigns: [...hs].map(([headsign, { stop, dir }]) => ({ headsign, dir, stop })).sort((a, b) => a.headsign.localeCompare(b.headsign, 'nl')),
+        headsigns: [...hs].map(([headsign, { stop, dir, others }]) => ({ headsign, dir, stop, others }))
+          .sort((a, b) => a.headsign.localeCompare(b.headsign, 'nl')),
       }))
       .sort(lineOrder);
     delete g.byRoute;
@@ -132,12 +135,38 @@ export function slimStop(stopOrGroup) {
 
 const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
 
-/** Keys into times.k for every platform of a stop group that serves this line + direction. */
-export function departureKeys(group, routeId, dir) {
+/**
+ * Keys into times.k for every platform of a stop group that serves this line + direction; with
+ * `only`, just the departures to that destination.
+ */
+export function departureKeys(group, routeId, dir, only = null) {
   if (!group || !group.platforms || routeId == null || dir == null) return [];
   return group.platforms
     .filter((s) => s.lines.some(([rid, , d]) => rid === routeId && String(d) === String(dir)))
-    .map((s) => `${s.quay || s.id}|${routeId}|${dir}`);
+    .map((s) => `${s.quay || s.id}|${routeId}|${dir}${only ? `|${only}` : ''}`);
+}
+
+const destinationIndex = new WeakMap(); // times -> Map(direction key -> [destination])
+
+/**
+ * The direction keys plus, as [key, destination] pairs, the keys of the departures that go somewhere
+ * else than the main destination. Fed to departuresAround, each departure then knows where it goes.
+ */
+export function labelledKeys(times, keys) {
+  if (!times || !times.k) return keys;
+  let index = destinationIndex.get(times);
+  if (!index) {
+    index = new Map();
+    for (const k of Object.keys(times.k)) {
+      const parts = k.split('|');
+      if (parts.length < 4) continue;
+      const base = parts.slice(0, 3).join('|');
+      if (!index.has(base)) index.set(base, []);
+      index.get(base).push(parts.slice(3).join('|'));
+    }
+    destinationIndex.set(times, index);
+  }
+  return keys.flatMap((k) => [k, ...(index.get(k) || []).map((dest) => [`${k}|${dest}`, dest])]);
 }
 
 /**
@@ -178,7 +207,9 @@ export function dayDepartures(times, key, date) {
 /**
  * The departures just before and after a moment: by default 2 before (or at) and 2 after.
  * `localWhen` is 'YYYY-MM-DDTHH:MM'. Handles trips after midnight (GTFS times over 24:00 belong to
- * the previous service day). Returns { list: [{ when, time, dayOffset }], estimated }.
+ * the previous service day). `keys` are strings or [key, destination] pairs (see labelledKeys).
+ * Returns { list: [{ when, time, dayOffset, headsign }], estimated }; headsign is null unless a
+ * labelled key has that departure.
  */
 export function departuresAround(times, keys, localWhen, { before = 2, after = 2 } = {}) {
   const at = new Date(localWhen);
@@ -187,17 +218,21 @@ export function departuresAround(times, keys, localWhen, { before = 2, after = 2
   const mo = at.getMonth();
   const da = at.getDate();
   const now = at.getHours() * 60 + at.getMinutes();
-  const all = new Set();
+  const all = new Map(); // minute -> destination or null
   let estimated = false;
   for (const offset of [-1, 0, 1]) {
     const day = new Date(y, mo, da + offset);
-    for (const key of keys) {
+    for (const item of keys) {
+      const [key, label] = Array.isArray(item) ? item : [item, null];
       const r = dayDepartures(times, key, day);
       if (offset === 0 && r.estimated) estimated = true;
-      for (const t of r.minutes) all.add(offset * 1440 + t);
+      for (const t of r.minutes) {
+        const minute = offset * 1440 + t;
+        if (label || !all.has(minute)) all.set(minute, label);
+      }
     }
   }
-  const sorted = [...all].sort((a, b) => a - b);
+  const sorted = [...all.keys()].sort((a, b) => a - b);
   const pick = [
     ...sorted.filter((t) => t <= now).slice(-before),
     ...sorted.filter((t) => t > now).slice(0, after),
@@ -205,7 +240,7 @@ export function departuresAround(times, keys, localWhen, { before = 2, after = 2
   const list = pick.map((t) => {
     const d = new Date(y, mo, da, 0, t);
     const dayOffset = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(y, mo, da)) / 86400000);
-    return { when: toLocalInput(d), time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, dayOffset };
+    return { when: toLocalInput(d), time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, dayOffset, headsign: all.get(t) };
   });
   return { list, estimated };
 }

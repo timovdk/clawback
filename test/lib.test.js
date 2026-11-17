@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
   buildFormUrl, buildLines, buildSubject, dayDepartures, departureKeys, departuresAround, findIssue,
-  groupStops, issuesFor, MAX_ESTIMATE_DAYS, linesToHtml, logToCsv,
+  groupStops, issuesFor, labelledKeys, MAX_ESTIMATE_DAYS, linesToHtml, logToCsv,
   nearestGroups, nearestStops, searchStops, slimStop, stopLabel,
 } from '../js/lib.js';
 import { ISSUES } from '../js/config.js';
@@ -270,6 +270,55 @@ test('loop lines: both directions to the same destination are listed separately,
   assert.equal(helium.headsigns.length, 2);
   assert.ok(helium.headsigns.every((h) => /^Centraal Station \(via .+\)$/.test(h.headsign)));
   assert.notEqual(helium.headsigns[0].dir, helium.headsigns[1].dir);
+});
+
+test('platform codes are not part of stop names, so all platforms of a station form one stop', () => {
+  for (const st of data.stops) {
+    if (st.platform) assert.ok(!st.name.endsWith(`(${st.platform})`), `${st.town}, ${st.name}`);
+  }
+  const cs = groupStops(data).find((g) => g.key === 'Utrecht|CS Jaarbeurszijde');
+  assert.ok(cs && cs.platforms.length >= 10, 'CS Jaarbeurszijde has its C and D platforms together');
+});
+
+test('other destinations in a direction: own choice, and labelled departures under the main one', () => {
+  const groups = groupStops(data);
+  let checked = 0;
+  for (const g of groups) {
+    for (const l of g.lines) {
+      for (const h of l.headsigns) {
+        for (const other of h.others) {
+          assert.notEqual(other, h.headsign);
+          const keys = departureKeys(g, l.routeId, h.dir);
+          const only = departureKeys(g, l.routeId, h.dir, other);
+          assert.ok(only.some((k) => times.k[k]), `${g.key} ${l.line} → ${other} has departures`);
+          // every departure to `other` is also in the direction, and labelled there
+          const all = labelledKeys(times, keys);
+          assert.ok(all.some((k) => Array.isArray(k) && k[1] === other));
+          checked += 1;
+        }
+      }
+    }
+  }
+  assert.ok(checked > 50, `only ${checked} directions with other destinations`);
+
+  // One concrete ride: pick a direction with another destination and find a departure to it.
+  const g = groups.find((x) => x.lines.some((l) => l.headsigns.some((h) => h.others.length)));
+  const l = g.lines.find((x) => x.headsigns.some((h) => h.others.length));
+  const h = l.headsigns.find((x) => x.others.length);
+  const other = h.others[0];
+  const only = departureKeys(g, l.routeId, h.dir, other);
+  const [key] = only.filter((k) => times.k[k]);
+  const e = times.k[key];
+  const day = e.d.findIndex((p) => e.p[p].length);
+  const minute = e.p[e.d[day]][0];
+  const date = times.dates[day];
+  const at = new Date(+date.slice(0, 4), +date.slice(4, 6) - 1, +date.slice(6, 8), 0, minute);
+  const local = `${localDay(at)}T${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  const mixed = departuresAround(times, labelledKeys(times, departureKeys(g, l.routeId, h.dir)), local, { before: 1, after: 0 });
+  assert.equal(mixed.list[0].when, local);
+  assert.equal(mixed.list[0].headsign, other);
+  const filtered = departuresAround(times, only, local, { before: 1, after: 0 });
+  assert.equal(filtered.list[0].when, local);
 });
 
 test('uov.json and times.json come from the same build', () => {
