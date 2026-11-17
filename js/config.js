@@ -2,7 +2,7 @@
 // uploads uov.json and times.json to, with a trailing slash, e.g. 'https://clawback-data.timovdk.nl/'.
 // Empty: use the copies in data/ next to the app. Those are also the fallback when the bucket
 // can't be reached.
-export const DATA_URL = '';
+export const DATA_URL = 'https://clawback-data.timovdk.nl/';
 
 // Everything that depends on U-OV's Zendesk form lives here.
 // Field IDs come from the saved form page ("Toegankelijkheid"). If U-OV changes the form,
