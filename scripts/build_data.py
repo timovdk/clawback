@@ -263,17 +263,25 @@ def build(cache: Path = CACHE) -> tuple[dict, dict]:
             short = routes[x[0]]["route_short_name"]
             return (len(short), short, x[1])
 
-        stop_names = {s["stop_id"]: split_name(s["stop_name"])[1] for s in rows(zf, "stops.txt")}
+        # For "via <next stop>": the cleaned name the app shows, also for stops it doesn't list.
+        stop_names = {s["stop_id"]: strip_platform(split_name(s["stop_name"])[1], s["platform_code"])
+                      for s in rows(zf, "stops.txt")}
+        stop_names.update({sid: merged[key]["name"] for sid, key in stop_key.items()})
 
         # Loop lines can have the same destination in both directions at one stop. Find those
         # (per stop name, across its platforms) so they can be labelled "via <next stop>".
         def main_dest(stop, rid, d):
             return destinations[((stop["town"], stop["name"]), rid, d)][0]
 
+        # One line can be several routes (line 3: one per loop direction), shown as one line in the app.
+        def line_id(rid):
+            r = routes[rid]
+            return r["route_short_name"], route_operator[rid], r["route_type"]
+
         dirs_per_dest: dict[tuple, set] = defaultdict(set)
         for stop in merged.values():
             for rid, d in stop["_serves"]:
-                dirs_per_dest[(stop["town"], stop["name"], rid, main_dest(stop, rid, d))].add(d)
+                dirs_per_dest[(stop["town"], stop["name"], line_id(rid), main_dest(stop, rid, d))].add((rid, d))
 
         def via(stop, rid, d):
             ids = [sid for sid, key in stop_key.items() if key == (stop["quay"] or stop["id"])]
@@ -291,7 +299,7 @@ def build(cache: Path = CACHE) -> tuple[dict, dict]:
             for rid, d in stop.pop("_serves"):
                 main, others = destinations[((stop["town"], stop["name"]), rid, d)]
                 entry = [rid, main, d]
-                if len(dirs_per_dest[(stop["town"], stop["name"], rid, main)]) > 1:
+                if len(dirs_per_dest[(stop["town"], stop["name"], line_id(rid), main)]) > 1:
                     entry.append(via(stop, rid, d))
                 if others:
                     entry[3:] = [entry[3] if len(entry) > 3 else "", others]

@@ -52,7 +52,7 @@ const S = {
   editingId: null, // id of a draft being finished
   stop: null, // group
   savedStop: null, // stop from a resumed draft that is no longer in the timetable data
-  pickedRoute: null, // routeId chosen, waiting for direction
+  pickedRoute: null, // routeId of the line entry chosen, waiting for direction
   line: null, // { routeId?, line, headsign, dir?, only?, platform? }; only: a destination other than the main one
   manualLine: false,
   vehicle: '',
@@ -153,7 +153,7 @@ function chooseRoute(lineEntry) {
 function chooseDirection(lineEntry, h, only = null) {
   S.pickedRoute = null;
   S.line = {
-    routeId: lineEntry.routeId, line: lineEntry.line, headsign: only || h.headsign, dir: h.dir, only,
+    routeId: h.routeId, line: lineEntry.line, headsign: only || h.headsign, dir: h.dir, only,
     platform: slimStop(h.stop),
   };
   // If only one issue applies to this vehicle (trams: "Anders"), pick it straight away.

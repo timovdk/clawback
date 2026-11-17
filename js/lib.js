@@ -78,9 +78,11 @@ const lineOrder = (a, b) => a.line.length - b.line.length || a.line.localeCompar
 /**
  * Merge platforms (A/B/C, opposite sides of the road ...) into one entry per stop name.
  * Group: { key, town, name, platform: '', lat, lon, platforms: [stop],
- *          lines: [{ routeId, line, headsigns: [{ headsign, dir, stop, others: [destination] }] }] }
+ *          lines: [{ routeId, line, headsigns: [{ headsign, routeId, dir, stop, others: [destination] }] }] }
  * One headsign per direction: its main destination. `others` are the other destinations in that
  * direction that are common enough for their own choice (short runs, extensions).
+ * One line can be several routes in the data (line 3 has a route per loop direction, U-flex one per
+ * area); they are one line here, and each headsign knows its own route (for the departures).
  */
 export function groupStops(data) {
   const groups = new Map();
@@ -93,20 +95,22 @@ export function groupStops(data) {
     }
     g.platforms.push(s);
     for (const [routeId, headsign, dir, via, others = []] of s.lines) {
-      if (!g.byRoute.has(routeId)) g.byRoute.set(routeId, new Map());
-      const hs = g.byRoute.get(routeId);
+      const r = data.routes[routeId] || {};
+      const lineKey = `${r.line}|${r.op}|${r.mode}`;
+      if (!g.byRoute.has(lineKey)) g.byRoute.set(lineKey, { routeId, hs: new Map() });
+      const { hs } = g.byRoute.get(lineKey);
       // Loop lines can end at the same place in both directions; the data then adds the next stop.
       const label = via ? `${headsign} (via ${via})` : headsign;
-      if (!hs.has(label)) hs.set(label, { stop: s, dir, others });
+      if (!hs.has(label)) hs.set(label, { routeId, stop: s, dir, others });
     }
   }
   const out = [];
   for (const g of groups.values()) {
-    g.lines = [...g.byRoute]
-      .map(([routeId, hs]) => ({
+    g.lines = [...g.byRoute.values()]
+      .map(({ routeId, hs }) => ({
         routeId,
         line: (data.routes[routeId] || {}).line || '?',
-        headsigns: [...hs].map(([headsign, { stop, dir, others }]) => ({ headsign, dir, stop, others }))
+        headsigns: [...hs].map(([headsign, h]) => ({ headsign, ...h }))
           .sort((a, b) => a.headsign.localeCompare(b.headsign, 'nl')),
       }))
       .sort(lineOrder);

@@ -188,9 +188,9 @@ test('departures: two before and the next one, for line 8 to Lunetten', () => {
   const g = groupStops(data).find((x) => x.name === 'Station Vaartsche Rijn');
   const l8 = g.lines.find((l) => l.line === '8');
   const lunetten = l8.headsigns.find((h) => h.headsign === 'Lunetten');
-  const keys = departureKeys(g, l8.routeId, lunetten.dir);
+  const keys = departureKeys(g, lunetten.routeId, lunetten.dir);
   assert.ok(keys.length >= 1);
-  assert.ok(keys.every((k) => k.endsWith(`|${l8.routeId}|${lunetten.dir}`)));
+  assert.ok(keys.every((k) => k.endsWith(`|${lunetten.routeId}|${lunetten.dir}`)));
 
   const at = `${localDay(midWeek)}T14:00`;
   const { list, estimated } = departuresAround(times, keys, at);
@@ -280,6 +280,22 @@ test('platform codes are not part of stop names, so all platforms of a station f
   assert.ok(cs && cs.platforms.length >= 10, 'CS Jaarbeurszijde has its C and D platforms together');
 });
 
+test('a line that is several routes in the data (loop line 3, U-flex areas) is one line', () => {
+  for (const g of groupStops(data)) {
+    const seen = new Set();
+    for (const l of g.lines) {
+      const r = data.routes[l.routeId];
+      const id = `${l.line}|${r.op}|${r.mode}`;
+      assert.ok(!seen.has(id), `${g.key}: line ${l.line} twice`);
+      seen.add(id);
+      for (const h of l.headsigns) {
+        assert.equal(data.routes[h.routeId].line, l.line);
+        assert.ok(departureKeys(g, h.routeId, h.dir).some((k) => times.k[k]), `${g.key} ${l.line} → ${h.headsign}`);
+      }
+    }
+  }
+});
+
 test('other destinations in a direction: own choice, and labelled departures under the main one', () => {
   const groups = groupStops(data);
   let checked = 0;
@@ -288,8 +304,8 @@ test('other destinations in a direction: own choice, and labelled departures und
       for (const h of l.headsigns) {
         for (const other of h.others) {
           assert.notEqual(other, h.headsign);
-          const keys = departureKeys(g, l.routeId, h.dir);
-          const only = departureKeys(g, l.routeId, h.dir, other);
+          const keys = departureKeys(g, h.routeId, h.dir);
+          const only = departureKeys(g, h.routeId, h.dir, other);
           assert.ok(only.some((k) => times.k[k]), `${g.key} ${l.line} → ${other} has departures`);
           // every departure to `other` is also in the direction, and labelled there
           const all = labelledKeys(times, keys);
@@ -306,7 +322,7 @@ test('other destinations in a direction: own choice, and labelled departures und
   const l = g.lines.find((x) => x.headsigns.some((h) => h.others.length));
   const h = l.headsigns.find((x) => x.others.length);
   const other = h.others[0];
-  const only = departureKeys(g, l.routeId, h.dir, other);
+  const only = departureKeys(g, h.routeId, h.dir, other);
   const [key] = only.filter((k) => times.k[k]);
   const e = times.k[key];
   const day = e.d.findIndex((p) => e.p[p].length);
@@ -314,7 +330,7 @@ test('other destinations in a direction: own choice, and labelled departures und
   const date = times.dates[day];
   const at = new Date(+date.slice(0, 4), +date.slice(4, 6) - 1, +date.slice(6, 8), 0, minute);
   const local = `${localDay(at)}T${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
-  const mixed = departuresAround(times, labelledKeys(times, departureKeys(g, l.routeId, h.dir)), local, { before: 1, after: 0 });
+  const mixed = departuresAround(times, labelledKeys(times, departureKeys(g, h.routeId, h.dir)), local, { before: 1, after: 0 });
   assert.equal(mixed.list[0].when, local);
   assert.equal(mixed.list[0].headsign, other);
   const filtered = departuresAround(times, only, local, { before: 1, after: 0 });
