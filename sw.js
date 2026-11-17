@@ -1,11 +1,15 @@
-// Offline support. The app shell and stop data are served from the cache straight away
-// and refreshed in the background (stale-while-revalidate), so a new version shows up on
-// the next launch. Cat gifs are cached in a separate cache, cache-first.
+// Offline support.
+// - App shell and the bundled data/ copies: served from the cache straight away and refreshed
+//   in the background (stale-while-revalidate). A changed file shows the "Herladen" banner.
+// - uov.json and times.json from the R2 bucket (js/config.js, DATA_URL): the same, but in their own
+//   cache that survives app updates, and without the banner (new data isn't a new app version).
+// - Cat gifs: cache-first, in their own cache.
 // Bump VERSION when the list of files below changes.
 
-const VERSION = 'v11';
+const VERSION = 'v12';
 const SHELL = `uov-shell-${VERSION}`;
 const CATS = 'uov-cats';
+const DATA = 'uov-data';
 
 const SHELL_FILES = [
   './',
@@ -60,7 +64,12 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
-  if (request.method !== 'GET' || url.origin !== self.location.origin) return; // e.g. the U-OV form
+  if (request.method !== 'GET') return;
+  if (url.origin !== self.location.origin) {
+    // Data from the bucket; anything else cross-origin (e.g. the U-OV form) is left alone.
+    if (/\/(uov|times)\.json$/.test(url.pathname)) event.respondWith(staleWhileRevalidate(DATA, request.url, request, event, false));
+    return;
+  }
 
   if (url.pathname.includes('/cats/') && !url.pathname.endsWith('.json')) {
     event.respondWith(cacheFirst(CATS, request));
@@ -97,13 +106,13 @@ async function cacheFirst(cacheName, request) {
   return res;
 }
 
-async function staleWhileRevalidate(cacheName, key, request, event) {
+async function staleWhileRevalidate(cacheName, key, request, event, notify = true) {
   const cache = await caches.open(cacheName);
   const hit = await cache.match(key, { ignoreSearch: request.mode === 'navigate' });
   const update = fetch(request, { cache: 'no-cache' })
     .then(async (res) => {
       if (res.ok) {
-        if (hit && await changed(hit, res)) notifyUpdate();
+        if (notify && hit && await changed(hit, res)) notifyUpdate();
         await cache.put(key, res.clone());
       }
       return res;

@@ -144,18 +144,29 @@ export function departureKeys(group, routeId, dir) {
  * Departure minutes (from the service day's midnight) for one key on one date.
  * The data has a timetable per calendar date (weekends, holidays and roadworks included).
  * Dates outside it use the timetable that occurs most often on that weekday, so a one-off
- * day (a holiday, a diversion) isn't taken as the norm. Returns { minutes, estimated }.
+ * day (a holiday, a diversion) isn't taken as the norm, but only up to MAX_ESTIMATE_DAYS away
+ * from the data: beyond that (an old fallback copy) there are no departures rather than
+ * misleading ones. Returns { minutes, estimated }.
  */
+export const MAX_ESTIMATE_DAYS = 28;
+
+const parseYmd = (s) => new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
+
 export function dayDepartures(times, key, date) {
   const entry = times && times.k[key];
-  if (!entry) return { minutes: [], estimated: false };
+  if (!entry || !times.dates.length) return { minutes: [], estimated: false };
   const i = times.dates.indexOf(ymd(date));
   if (i >= 0) return { minutes: entry.p[entry.d[i]], estimated: false };
+
+  const first = parseYmd(times.dates[0]);
+  const last = parseYmd(times.dates[times.dates.length - 1]);
+  const gapDays = Math.max(first - date, date - last) / 86400000;
+  if (gapDays > MAX_ESTIMATE_DAYS) return { minutes: [], estimated: false };
 
   const weekday = date.getDay();
   const count = new Map();
   times.dates.forEach((s, j) => {
-    if (new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)).getDay() === weekday) {
+    if (parseYmd(s).getDay() === weekday) {
       count.set(entry.d[j], (count.get(entry.d[j]) || 0) + 1);
     }
   });

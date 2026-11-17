@@ -1,5 +1,5 @@
 /* global m */
-import { ISSUES } from './config.js';
+import { DATA_URL, ISSUES } from './config.js';
 import * as MSG from './messages.js';
 import { Mascot, randomCoat } from './mascot.js';
 import { load, loadSync, requestPersistence, save } from './storage.js';
@@ -8,6 +8,18 @@ import {
   issuesFor, logToCsv,
   nearestGroups, searchStops, slimStop, stopLabel, toLocalInput,
 } from './lib.js';
+
+// --- data files: from the R2 bucket (DATA_URL) with the bundled copy as fallback -------------
+
+function dataUrls(file) {
+  return DATA_URL ? [DATA_URL + file, `data/${file}`] : [`data/${file}`];
+}
+
+/** JSON from the first of `urls` that works (any failure moves on to the next). */
+function fetchFirst(urls) {
+  const next = (err) => { if (urls.length > 1) return fetchFirst(urls.slice(1)); throw err; };
+  return fetch(urls[0], { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : next(new Error(r.status))), next);
+}
 
 // --- storage: IndexedDB with a localStorage mirror, see storage.js ----------------
 // Keys keep their old names so existing logs and settings carry over.
@@ -156,8 +168,7 @@ function departurePicked() {
 function ensureTimes() {
   if (S.timesState !== 'idle') return;
   S.timesState = 'loading';
-  fetch('data/times.json')
-    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  fetchFirst(dataUrls('times.json'))
     .then((t) => { S.times = t; S.timesState = 'ready'; })
     .catch(() => { S.timesState = 'error'; })
     .finally(() => m.redraw());
@@ -899,8 +910,7 @@ fetch('cats/cats.json')
   })
   .catch(() => {});
 
-fetch('data/uov.json')
-  .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+fetchFirst(dataUrls('uov.json'))
   .then((d) => {
     S.data = d;
     S.groups = groupStops(d);

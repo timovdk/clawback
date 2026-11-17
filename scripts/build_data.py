@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Build data/uov.json (stops + lines for the U-OV concession) from the national GTFS feed.
+"""Build data/uov.json (stops + lines) and data/times.json (departures) for U-OV from the
+national GTFS feed.
 
 Usage:
     python3 scripts/build_data.py            # download (if changed) and build
     python3 scripts/build_data.py --offline  # build from the cached zip only
+    python3 scripts/build_data.py --out-dir /tmp/new --cache /data/cache/gtfs-nl.zip
+
+The weekly refresh on the NAS (nas/clawback_data.py) uses the same functions: build(),
+check() and write().
 
 Only the standard library is used. The OVapi usage policy asks clients to identify
 themselves in the User-Agent; set UOV_USER_AGENT to something with a way to contact you,
@@ -22,13 +27,12 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / ".cache" / "gtfs-nl.zip"
 OUT = ROOT / "data" / "uov.json"
-OUT_TIMES = ROOT / "data" / "times.json"
 GTFS_URL = "https://gtfs.ovapi.nl/nl/gtfs-nl.zip"
 USER_AGENT = os.environ.get("UOV_USER_AGENT", "clawback/1.0 (personal project)")
 
@@ -43,19 +47,20 @@ OPERATORS = {
 MODES = {"0": "tram", "3": "bus"}
 
 
-def download() -> None:
-    CACHE.parent.mkdir(parents=True, exist_ok=True)
+def download(cache: Path = CACHE) -> None:
+    """Fetch the feed into `cache`, only when it changed (If-Modified-Since)."""
+    cache.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(GTFS_URL, headers={"User-Agent": USER_AGENT})
-    if CACHE.exists():
-        req.add_header("If-Modified-Since", email.utils.formatdate(CACHE.stat().st_mtime, usegmt=True))
+    if cache.exists():
+        req.add_header("If-Modified-Since", email.utils.formatdate(cache.stat().st_mtime, usegmt=True))
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            tmp = CACHE.with_suffix(".part")
+            tmp = cache.with_suffix(".part")
             with open(tmp, "wb") as f:
                 while chunk := resp.read(1 << 20):
                     f.write(chunk)
-            tmp.replace(CACHE)
-            print(f"downloaded {CACHE.stat().st_size / 1e6:.0f} MB")
+            tmp.replace(cache)
+            print(f"downloaded {cache.stat().st_size / 1e6:.0f} MB")
     except urllib.error.HTTPError as e:
         if e.code != 304:
             raise
@@ -73,8 +78,9 @@ def split_name(full: str) -> tuple[str, str]:
     return (town, name) if sep else ("", full)
 
 
-def build() -> dict:
-    with zipfile.ZipFile(CACHE) as zf:
+def build(cache: Path = CACHE) -> tuple[dict, dict]:
+    """(stops and lines, departure times) from the cached feed. Both carry the same "build" id."""
+    with zipfile.ZipFile(cache) as zf:
         feed = next(rows(zf, "feed_info.txt"))
 
         routes = {r["route_id"]: r for r in rows(zf, "routes.txt") if r["agency_id"] == AGENCY}
@@ -185,8 +191,12 @@ def build() -> dict:
                 service_dates[r["service_id"]].add(r["date"])
 
     times = build_times(departures, stop_key, service_dates)
+    generated = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    build_id = f"{generated}/{feed['feed_version']}"  # links uov.json and times.json of one build
+    times = {"build": build_id, **times}
     return {
-        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated": generated,
+        "build": build_id,
         "feed": {"version": feed["feed_version"], "start": feed["feed_start_date"], "end": feed["feed_end_date"]},
         "operators": OPERATORS,
         "routes": {
@@ -238,25 +248,78 @@ def build_times(departures: dict, stop_key: dict, service_dates: dict) -> dict:
     return {"dates": dates, "k": out}
 
 
+def check(data: dict, times: dict, previous: dict | None = None, today: date | None = None) -> list[str]:
+    """Problems with a fresh build (empty: fine to publish). The weekly refresh publishes without
+    review, so be strict: a feed that changed its format should keep the old data, not break the app."""
+    problems = []
+    stops, routes = data.get("stops") or [], data.get("routes") or {}
+    if len(stops) < 2500:
+        problems.append(f"only {len(stops)} stops")
+    if len(routes) < 100:
+        problems.append(f"only {len(routes)} routes")
+    ops = {r.get("op") for r in routes.values()}
+    for op in OPERATORS:
+        if op not in ops:
+            problems.append(f"no routes for {op}")
+    if not any(r.get("mode") == "tram" for r in routes.values()):
+        problems.append("no tram lines")
+    for st in stops:
+        if not (st.get("name") and st.get("lines")):
+            problems.append(f"incomplete stop {st.get('id')}")
+        elif not (50.7 < st.get("lat", 0) < 53.6 and 3.3 < st.get("lon", 0) < 7.3):
+            problems.append(f"stop {st['id']} is outside the Netherlands")
+        for line in st.get("lines", []):
+            if line[0] not in routes:
+                problems.append(f"stop {st['id']} has an unknown route {line[0]}")
+    if previous and len(stops) < 0.9 * len(previous.get("stops") or []):
+        problems.append(f"{len(stops)} stops, down from {len(previous['stops'])}")
+
+    keys, dates = times.get("k") or {}, times.get("dates") or []
+    if len(keys) < 5000:
+        problems.append(f"only {len(keys)} stop/line/direction keys with departures")
+    today = today or date.today()
+    ahead = [d for d in dates if d >= today.strftime("%Y%m%d")]
+    if len(ahead) < 14:
+        problems.append(f"departures for only {len(ahead)} days from today")
+    if times.get("build") != data.get("build"):
+        problems.append("uov.json and times.json are from different builds")
+    return problems[:10]
+
+
+def write(data: dict, times: dict, out_dir: Path) -> tuple[Path, Path]:
+    """Write uov.json and times.json to `out_dir`; returns their paths."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    uov, tim = out_dir / "uov.json", out_dir / "times.json"
+    uov.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tim.write_text(json.dumps(times, separators=(",", ":")), encoding="utf-8")
+    return uov, tim
+
+
+def summary(data: dict, times: dict) -> str:
+    return (f"{len(data['stops'])} stops, {len(data['routes'])} routes, {len(times['k'])} stop/line/direction "
+            f"keys, departures {times['dates'][0]}–{times['dates'][-1]}" if times.get("dates") else "no departures")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--offline", action="store_true", help="don't download, use the cached zip")
+    ap.add_argument("--out-dir", type=Path, default=OUT.parent, help="where to write uov.json and times.json (default: data/)")
+    ap.add_argument("--cache", type=Path, default=CACHE, help="the downloaded GTFS zip (default: .cache/gtfs-nl.zip)")
     args = ap.parse_args()
 
     if not args.offline:
-        download()
-    elif not CACHE.exists():
-        print(f"no cached feed at {CACHE}", file=sys.stderr)
+        download(args.cache)
+    elif not args.cache.exists():
+        print(f"no cached feed at {args.cache}", file=sys.stderr)
         return 1
 
-    data, times = build()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"wrote {OUT.relative_to(ROOT)}: {len(data['stops'])} stops, "
-          f"{len(data['routes'])} routes, {OUT.stat().st_size / 1e3:.0f} kB")
-    OUT_TIMES.write_text(json.dumps(times, separators=(",", ":")), encoding="utf-8")
-    print(f"wrote {OUT_TIMES.relative_to(ROOT)}: {len(times['k'])} stop/line/direction keys, "
-          f"{len(times['dates'])} dates, {OUT_TIMES.stat().st_size / 1e6:.1f} MB")
+    data, times = build(args.cache)
+    problems = check(data, times)
+    uov, tim = write(data, times, args.out_dir)
+    print(f"wrote {uov} ({uov.stat().st_size / 1e3:.0f} kB) and {tim} ({tim.stat().st_size / 1e6:.1f} MB): {summary(data, times)}")
+    if problems:
+        print("WARNING, this build looks wrong: " + "; ".join(problems), file=sys.stderr)
+        return 2
     return 0
 
 

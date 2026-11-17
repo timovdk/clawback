@@ -1,16 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import {
   buildFormUrl, buildLines, buildSubject, dayDepartures, departureKeys, departuresAround, findIssue,
-  groupStops, issuesFor, linesToHtml, logToCsv,
+  groupStops, issuesFor, MAX_ESTIMATE_DAYS, linesToHtml, logToCsv,
   nearestGroups, nearestStops, searchStops, slimStop, stopLabel,
 } from '../js/lib.js';
 import { ISSUES } from '../js/config.js';
 import * as MSG from '../js/messages.js';
 
-const data = JSON.parse(readFileSync(new URL('../data/uov.json', import.meta.url), 'utf8'));
-const times = JSON.parse(readFileSync(new URL('../data/times.json', import.meta.url), 'utf8'));
+// The data under test: data/ by default; the NAS refresh points CLAWBACK_DATA_DIR at a fresh
+// build to check it before uploading (nas/clawback_data.py).
+const dataDir = process.env.CLAWBACK_DATA_DIR
+  ? pathToFileURL(`${process.env.CLAWBACK_DATA_DIR.replace(/\/$/, '')}/`)
+  : new URL('../data/', import.meta.url);
+const data = JSON.parse(readFileSync(new URL('uov.json', dataDir), 'utf8'));
+const times = JSON.parse(readFileSync(new URL('times.json', dataDir), 'utf8'));
 const vaartscheC = data.stops.find((s) => s.name === 'Station Vaartsche Rijn' && s.platform === 'C');
 
 const report = {
@@ -169,6 +175,14 @@ test('mascot lines in the top bar fit on two lines (≤ 60 characters)', () => {
 const feedDate = (i) => { const s = times.dates[i]; return new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)); };
 const localDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const midWeek = (() => { for (let i = 0; i < times.dates.length; i++) if (feedDate(i).getDay() === 3) return feedDate(i); return feedDate(0); })();
+// The first date after the data with the same weekday as midWeek, plus `weeks` extra weeks.
+const sameWeekdayAfterData = (weeks = 0) => {
+  const last = feedDate(times.dates.length - 1);
+  const d = new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1);
+  while (d.getDay() !== midWeek.getDay()) d.setDate(d.getDate() + 1);
+  d.setDate(d.getDate() + 7 * weeks);
+  return d;
+};
 
 test('departures: two before and the next one, for line 8 to Lunetten', () => {
   const g = groupStops(data).find((x) => x.name === 'Station Vaartsche Rijn');
@@ -189,7 +203,7 @@ test('departures: two before and the next one, for line 8 to Lunetten', () => {
 test('departures: dates outside the feed use the same weekday', () => {
   const key = Object.keys(times.k)[0];
   const inside = dayDepartures(times, key, midWeek);
-  const later = new Date(midWeek.getFullYear(), midWeek.getMonth(), midWeek.getDate() + 7 * 20);
+  const later = sameWeekdayAfterData();
   const outside = dayDepartures(times, key, later);
   assert.equal(inside.estimated, false);
   assert.equal(outside.estimated, true);
@@ -240,8 +254,8 @@ test('fallback uses the most common timetable for that weekday, not a one-off da
     if (new Date(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)).getDay() === weekday) counts[e.d[j]] = (counts[e.d[j]] || 0) + 1;
   });
   const common = +Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
-  const far = new Date(midWeek.getFullYear(), midWeek.getMonth(), midWeek.getDate() + 7 * 30);
-  assert.deepEqual(dayDepartures(times, key, far).minutes, e.p[common]);
+  const near = sameWeekdayAfterData(1);
+  assert.deepEqual(dayDepartures(times, key, near).minutes, e.p[common]);
 });
 
 test('loop lines: both directions to the same destination are listed separately, with "via"', () => {
@@ -256,4 +270,17 @@ test('loop lines: both directions to the same destination are listed separately,
   assert.equal(helium.headsigns.length, 2);
   assert.ok(helium.headsigns.every((h) => /^Centraal Station \(via .+\)$/.test(h.headsign)));
   assert.notEqual(helium.headsigns[0].dir, helium.headsigns[1].dir);
+});
+
+test('uov.json and times.json come from the same build', () => {
+  assert.ok(data.build, 'uov.json has a build id');
+  assert.equal(times.build, data.build);
+});
+
+test('departure data that is too old gives no departures instead of guesses', () => {
+  const key = Object.keys(times.k)[0];
+  const tooFar = sameWeekdayAfterData(Math.ceil(MAX_ESTIMATE_DAYS / 7) + 1);
+  assert.deepEqual(dayDepartures(times, key, tooFar), { minutes: [], estimated: false });
+  const at = `${localDay(tooFar)}T14:00`;
+  assert.deepEqual(departuresAround(times, [key], at).list, []);
 });

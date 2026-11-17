@@ -1,0 +1,29 @@
+# Clawback data service. In e.g. appdata/clawback/:
+#   git clone https://github.com/<you>/clawback src
+#   cp src/nas/docker-compose.yml .  &&  cp src/nas/.env.example .env   (fill it in)
+#   docker compose up -d --build
+# Update: git -C src pull && docker compose up -d --build
+services:
+  clawback-data:
+    build:
+      context: ./src
+      dockerfile: nas/Dockerfile
+    image: clawback-data
+    container_name: clawback-data
+    restart: unless-stopped
+    user: "${PUID}:${PGID}"
+    environment:
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      R2_BUCKET: ${R2_BUCKET:-clawback}
+      UOV_USER_AGENT: ${UOV_USER_AGENT:-clawback/1.0}
+      UPLOAD_GZIP: ${UPLOAD_GZIP:-0}
+      TZ: Europe/Amsterdam
+    volumes:
+      - ${CLAWBACK_DATA}:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

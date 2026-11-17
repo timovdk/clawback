@@ -20,8 +20,8 @@ Everything you enter stays on your device.
 
 ```sh
 npm run serve   # local server on http://localhost:8000
-npm test        # unit tests (node --test)
-npm run data    # refresh data/uov.json from the national GTFS feed (~165 MB download, cached)
+npm test        # unit tests (node --test, and the data service's tests with Python)
+npm run data    # refresh the fallback copies data/uov.json + data/times.json (~165 MB download, cached)
 npm run cats    # update cats/cats.json after adding or removing cat gifs
 ```
 
@@ -38,25 +38,28 @@ DevTools → Application → Service workers, tick "Update on reload" while deve
 |---|---|
 | `index.html`, `style.css` | page and styles (light/dark via `data-theme`) |
 | `js/app.js` | the Mithril UI |
-| `js/config.js` | U-OV form field IDs and the issue buttons with their texts |
+| `js/config.js` | `DATA_URL` (the R2 bucket), U-OV form field IDs, the issue buttons and their texts |
 | `js/messages.js` | what the cat mascot says |
 | `js/mascot.js` | the mascot drawing and its coats |
 | `js/lib.js` | pure logic (form link, description, stops), tested in `test/` |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA: offline cache and home screen icon |
-| `data/uov.json` | stops and lines, built by `scripts/build_data.py` |
-| `data/times.json` | departure times per platform, line and direction (same script) |
+| `data/uov.json`, `data/times.json` | stops and lines, and departures per platform/line/direction; built by `scripts/build_data.py`. Fallback copies: the live data comes from the bucket |
+| `nas/` | the weekly data service (Docker, on the NAS), see [nas/README.md](nas/README.md) |
 | `cats/` | gifs shown after sending; credits in `cats/credits.json` |
 | `tools/prefill-test.html` | check the form prefill after U-OV changes their form |
 
 ### Publishing
 
-`.github/workflows/deploy.yml` publishes the app to GitHub Pages on every push to `main`, and
-refreshes the timetable data every Monday (or by hand: Actions → "Update data and
-deploy" → Run workflow). The tests run before every publish; if they fail, nothing is published
-and GitHub e-mails you.
+`.github/workflows/deploy.yml` publishes the app to GitHub Pages on every push to `main` (or by
+hand: Actions → "Deploy" → Run workflow). The tests run before every publish; if they fail,
+nothing is published and GitHub e-mails you. Once: Settings → Pages → Source: **GitHub Actions**.
 
-Once: Settings → Pages → Source: **GitHub Actions**. Optionally add a repository variable
-`UOV_USER_AGENT` with a way for OVapi to reach you.
+### Data
+
+The stop and departure data is rebuilt weekly by a small service on the NAS (`nas/`), which
+checks every build (including running the tests above against it) and uploads it to a public
+Cloudflare R2 bucket. The app reads it from there (`DATA_URL` in `js/config.js`) and falls back to
+the copies in `data/`. Setup and details: [nas/README.md](nas/README.md).
 
 Saved drafts and the log live on the phone and aren't touched by a data update. They store plain
 text (line, direction, stop name), so they stay valid; a draft whose stop has disappeared from the
